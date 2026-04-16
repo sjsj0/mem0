@@ -1,0 +1,26 @@
+[
+  {
+    "concurrency": 1,
+    "wall_time_s": 73.12,
+    "peak_llm": 1,
+    "peak_embed": 2
+  },
+  {
+    "concurrency": 4,
+    "wall_time_s": 60.47,
+    "peak_llm": 4,
+    "peak_embed": 3
+  },
+  {
+    "concurrency": 8,
+    "wall_time_s": 51.42,
+    "peak_llm": 8,
+    "peak_embed": 2
+  },
+  {
+    "concurrency": 16,
+    "wall_time_s": 45.9,
+    "peak_llm": 15,
+    "peak_embed": 10
+  }
+]

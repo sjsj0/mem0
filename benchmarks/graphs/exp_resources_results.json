@@ -1,0 +1,68 @@
+[
+  {
+    "concurrency": 1,
+    "n": 20,
+    "writes_per_sec": 0.185,
+    "p95_ms": 8158.4,
+    "p99_ms": 8487.3,
+    "avg_cpu_sys": 7.7,
+    "peak_cpu_sys": 28.4,
+    "avg_mem_mb": 123.9,
+    "peak_mem_mb": 132.8
+  },
+  {
+    "concurrency": 2,
+    "n": 20,
+    "writes_per_sec": 0.18,
+    "p95_ms": 16637.0,
+    "p99_ms": 17217.9,
+    "avg_cpu_sys": 12.2,
+    "peak_cpu_sys": 34.7,
+    "avg_mem_mb": 121.0,
+    "peak_mem_mb": 128.1
+  },
+  {
+    "concurrency": 4,
+    "n": 20,
+    "writes_per_sec": 0.182,
+    "p95_ms": 31389.9,
+    "p99_ms": 32409.0,
+    "avg_cpu_sys": 11.1,
+    "peak_cpu_sys": 30.4,
+    "avg_mem_mb": 77.5,
+    "peak_mem_mb": 87.6
+  },
+  {
+    "concurrency": 8,
+    "n": 20,
+    "writes_per_sec": 0.3,
+    "p95_ms": 29043.7,
+    "p99_ms": 29237.4,
+    "avg_cpu_sys": 6.8,
+    "peak_cpu_sys": 20.3,
+    "avg_mem_mb": 79.2,
+    "peak_mem_mb": 79.6
+  },
+  {
+    "concurrency": 16,
+    "n": 20,
+    "writes_per_sec": 0.322,
+    "p95_ms": 49308.9,
+    "p99_ms": 49978.5,
+    "avg_cpu_sys": 8.5,
+    "peak_cpu_sys": 42.2,
+    "avg_mem_mb": 81.1,
+    "peak_mem_mb": 82.2
+  },
+  {
+    "concurrency": 32,
+    "n": 20,
+    "writes_per_sec": 0.331,
+    "p95_ms": 57967.4,
+    "p99_ms": 59993.3,
+    "avg_cpu_sys": 6.4,
+    "peak_cpu_sys": 44.4,
+    "avg_mem_mb": 83.5,
+    "peak_mem_mb": 83.8
+  }
+]
