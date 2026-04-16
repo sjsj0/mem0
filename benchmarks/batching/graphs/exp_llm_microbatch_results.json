@@ -1,0 +1,90 @@
+[
+  {
+    "mode": "unbatched",
+    "concurrency": 1,
+    "n": 60,
+    "throughput": 4.644,
+    "p50_ms": 206.6,
+    "p95_ms": 279.3,
+    "p99_ms": 311.7,
+    "avg_batch_size": 1.0,
+    "max_batch_size_seen": 1
+  },
+  {
+    "mode": "batched",
+    "concurrency": 1,
+    "n": 60,
+    "throughput": 4.341,
+    "p50_ms": 225.9,
+    "p95_ms": 261.1,
+    "p99_ms": 319.3,
+    "avg_batch_size": 1.0,
+    "max_batch_size_seen": 1
+  },
+  {
+    "mode": "unbatched",
+    "concurrency": 4,
+    "n": 60,
+    "throughput": 12.721,
+    "p50_ms": 202.9,
+    "p95_ms": 399.5,
+    "p99_ms": 2283.5,
+    "avg_batch_size": 1.0,
+    "max_batch_size_seen": 1
+  },
+  {
+    "mode": "batched",
+    "concurrency": 4,
+    "n": 60,
+    "throughput": 8.715,
+    "p50_ms": 358.7,
+    "p95_ms": 636.4,
+    "p99_ms": 2452.7,
+    "avg_batch_size": 1.667,
+    "max_batch_size_seen": 3
+  },
+  {
+    "mode": "unbatched",
+    "concurrency": 8,
+    "n": 60,
+    "throughput": 14.267,
+    "p50_ms": 307.9,
+    "p95_ms": 2387.9,
+    "p99_ms": 2465.0,
+    "avg_batch_size": 1.0,
+    "max_batch_size_seen": 1
+  },
+  {
+    "mode": "batched",
+    "concurrency": 8,
+    "n": 60,
+    "throughput": 11.295,
+    "p50_ms": 436.5,
+    "p95_ms": 2615.9,
+    "p99_ms": 2696.4,
+    "avg_batch_size": 2.5,
+    "max_batch_size_seen": 5
+  },
+  {
+    "mode": "unbatched",
+    "concurrency": 16,
+    "n": 60,
+    "throughput": 14.332,
+    "p50_ms": 610.5,
+    "p95_ms": 2740.4,
+    "p99_ms": 2830.3,
+    "avg_batch_size": 1.0,
+    "max_batch_size_seen": 1
+  },
+  {
+    "mode": "batched",
+    "concurrency": 16,
+    "n": 60,
+    "throughput": 13.657,
+    "p50_ms": 578.3,
+    "p95_ms": 2977.1,
+    "p99_ms": 2989.6,
+    "avg_batch_size": 3.333,
+    "max_batch_size_seen": 8
+  }
+]
