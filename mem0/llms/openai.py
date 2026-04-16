@@ -147,3 +147,62 @@ class OpenAILLM(LLMBase):
                 logging.error(f"Error due to callback: {e}")
                 pass
         return parsed_response
+
+    def generate_batch_endpoint_response(
+        self, messages_list: List[List[Dict[str, str]]], batch_url: str, **kwargs
+    ) -> List[Union[str, Dict]]:
+        """
+        Generate multiple responses by hitting a specialized batch inference endpoint.
+        
+        Args:
+            messages_list (List[List[Dict[str, str]]]): List of message sets.
+            batch_url (str): The URL of the batch endpoint.
+            **kwargs: Additional parameters.
+
+        Returns:
+            List[Union[str, Dict]]: List of generated responses.
+        """
+        import httpx
+        
+        # Prepare headers
+        api_key = self.config.api_key or os.getenv("OPENAI_API_KEY")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        
+        # Construct payload for a hypothetical batch endpoint
+        # Typical format: {"model": "...", "requests": [{"messages": [...]}, ...]}
+        payload = {
+            "model": self.config.model,
+            "requests": [{"messages": msgs} for msgs in messages_list],
+            **self._get_supported_params(**kwargs)
+        }
+        
+        with httpx.Client() as client:
+            response = client.post(batch_url, json=payload, headers=headers, timeout=60.0)
+            response.raise_for_status()
+            results = response.json().get("results", [])
+            
+        # Parse each item in the results
+        parsed_results = []
+        for result in results:
+            # Wrap the result in a structure that _parse_response expects if necessary
+            # For simplicity, if result is just content string, use it, else parse
+            if isinstance(result, str):
+                parsed_results.append(result)
+            else:
+                # If it's a full OpenAI-like response object
+                class DummyObj:
+                    def __init__(self, d):
+                        for k, v in d.items():
+                            if isinstance(v, dict):
+                                setattr(self, k, DummyObj(v))
+                            elif isinstance(v, list):
+                                setattr(self, k, [DummyObj(i) if isinstance(i, dict) else i for i in v])
+                            else:
+                                setattr(self, k, v)
+                
+                parsed_results.append(self._parse_response(DummyObj(result), None))
+                
+        return parsed_results

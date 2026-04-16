@@ -107,3 +107,62 @@ class VllmLLM(LLMBase):
 
         response = self.client.chat.completions.create(**params)
         return self._parse_response(response, tools)
+
+    def generate_batch_endpoint_response(
+        self, messages_list: List[List[Dict[str, str]]], batch_url: str, **kwargs
+    ) -> List[Union[str, Dict]]:
+        """
+        Generate multiple responses by hitting a specialized vLLM batch inference endpoint.
+        
+        Args:
+            messages_list (List[List[Dict[str, str]]]): List of message sets.
+            batch_url (str): The URL of the batch endpoint.
+            **kwargs: Additional parameters.
+
+        Returns:
+            List[Union[str, Dict]]: List of generated responses.
+        """
+        import httpx
+        
+        # Prepare headers
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.config.api_key}",
+        }
+        
+        # vLLM batched chat completion format (from examples/online_serving/batched_chat_completions.py)
+        # Note: 'messages' in vLLM batch mode takes a List[List[Dict]]
+        payload = {
+            "model": self.config.model,
+            "messages": messages_list,
+            **self._get_supported_params(**kwargs)
+        }
+        
+        with httpx.Client() as client:
+            response = client.post(batch_url, json=payload, headers=headers, timeout=60.0)
+            response.raise_for_status()
+            results = response.json()
+            
+        # Parse each item in the results
+        parsed_results = []
+        for result in results:
+            if isinstance(result, str):
+                parsed_results.append(result)
+            elif isinstance(result, dict) and "choices" in result:
+                # Wrap the result in a structure that _parse_response expects
+                class DummyObj:
+                    def __init__(self, d):
+                        for k, v in d.items():
+                            if isinstance(v, dict):
+                                setattr(self, k, DummyObj(v))
+                            elif isinstance(v, list):
+                                setattr(self, k, [DummyObj(i) if isinstance(i, dict) else i for i in v])
+                            else:
+                                setattr(self, k, v)
+                
+                parsed_results.append(self._parse_response(DummyObj(result), None))
+            else:
+                # Fallback
+                parsed_results.append(result)
+                
+        return parsed_results

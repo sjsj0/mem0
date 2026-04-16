@@ -117,6 +117,43 @@ class LLMBase(ABC):
         """
         pass
 
+    def generate_batch_response(
+        self, messages_list: List[List[Dict[str, str]]], **kwargs
+    ) -> List[Union[str, Dict]]:
+        """
+        Generate multiple responses based on a list of message sets.
+        Default implementation uses a thread pool to call generate_response in parallel.
+        Subclasses should override this if they support a native batching endpoint.
+
+        Args:
+            messages_list (List[List[Dict[str, str]]]): List of message sets.
+            **kwargs: Additional parameters.
+
+        Returns:
+            List[Union[str, Dict]]: List of generated responses.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor() as executor:
+            return list(executor.map(lambda msgs: self.generate_response(msgs, **kwargs), messages_list))
+
+    def generate_batch_endpoint_response(
+        self, messages_list: List[List[Dict[str, str]]], batch_url: str, **kwargs
+    ) -> List[Union[str, Dict]]:
+        """
+        Generate multiple responses by hitting a specialized batch inference endpoint.
+        Should be implemented by subclasses.
+
+        Args:
+            messages_list (List[List[Dict[str, str]]]): List of message sets.
+            batch_url (str): The URL of the batch endpoint.
+            **kwargs: Additional parameters.
+
+        Returns:
+            List[Union[str, Dict]]: List of generated responses.
+        """
+        raise NotImplementedError("Batch endpoint response not implemented for this provider.")
+
     def _get_common_params(self, **kwargs) -> Dict:
         """
         Get common parameters that most providers use.

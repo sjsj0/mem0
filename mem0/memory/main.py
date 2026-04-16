@@ -8,7 +8,9 @@ import uuid
 import warnings
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+import threading
+import time
+from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
 
@@ -46,6 +48,87 @@ from mem0.utils.scoring import (
     normalize_bm25,
     score_and_rank,
 )
+
+# Suppress SWIG deprecation warnings globally
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=".*swig.*")
+
+
+class LLMBatchBundler:
+    """
+    Manages a queue of LLM requests and flushes them in batches.
+    Provides a way for concurrent write requests to be bundled together.
+    """
+    def __init__(self, llm, batch_url, batch_size=10, timeout=0.1):
+        self.llm = llm
+        self.batch_url = batch_url
+        self.batch_size = batch_size
+        self.timeout = timeout
+        
+        self._queue = []
+        self._results = {}
+        self._lock = threading.Lock()
+        self._worker_thread = None
+        self._stop_event = threading.Event()
+
+    def add_request(self, messages, **kwargs):
+        request_id = str(uuid.uuid4())
+        event = threading.Event()
+        
+        with self._lock:
+            self._queue.append({
+                "id": request_id, 
+                "messages": messages, 
+                "kwargs": kwargs, 
+                "event": event
+            })
+            if self._worker_thread is None or not self._worker_thread.is_alive():
+                self._worker_thread = threading.Thread(target=self._worker, daemon=True)
+                self._worker_thread.start()
+        
+        # Wait for the worker to process this request
+        event.wait()
+        
+        with self._lock:
+            return self._results.pop(request_id)
+
+    def _worker(self):
+        while not self._stop_event.is_set():
+            time.sleep(self.timeout)
+            
+            with self._lock:
+                if not self._queue:
+                    continue
+                
+                # Take current batch
+                batch = self._queue[:self.batch_size]
+                self._queue = self._queue[self.batch_size:]
+            
+            if not batch:
+                continue
+                
+            messages_list = [item["messages"] for item in batch]
+            # Assumes kwargs are consistent across the batch, or merges them
+            common_kwargs = batch[0]["kwargs"]
+            
+            try:
+                responses = self.llm.generate_batch_endpoint_response(
+                    messages_list=messages_list,
+                    batch_url=self.batch_url,
+                    **common_kwargs
+                )
+            except Exception as e:
+                logger.error(f"Batch LLM call failed: {e}")
+                responses = [e] * len(batch)
+            
+            with self._lock:
+                for idx, item in enumerate(batch):
+                    res = responses[idx] if idx < len(responses) else Exception("No response for this batch item")
+                    self._results[item["id"]] = res
+                    item["event"].set()
+
+    def stop(self):
+        self._stop_event.set()
+
 
 # Suppress SWIG deprecation warnings globally
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*SwigPy.*")
@@ -321,6 +404,20 @@ class Memory(MemoryBase):
             self._telemetry_vector_store = VectorStoreFactory.create(
                 self.config.vector_store.provider, telemetry_config
             )
+
+        # Batch inference support
+        self.batch_bundler = None
+        batch_url = os.environ.get("MEM0_BATCH_INFERENCE_URL") or self.config.llm.config.get("batch_url")
+        if batch_url:
+            batch_size = int(os.environ.get("MEM0_BATCH_SIZE", 10))
+            batch_timeout = float(os.environ.get("MEM0_BATCH_TIMEOUT", 0.05))
+            self.batch_bundler = LLMBatchBundler(
+                llm=self.llm,
+                batch_url=batch_url,
+                batch_size=batch_size,
+                timeout=batch_timeout
+            )
+
         capture_event("mem0.init", self, {"sync_type": "sync"})
 
     @property
@@ -587,13 +684,23 @@ class Memory(MemoryBase):
         )
 
         try:
-            response = self.llm.generate_response(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-            )
+            llm_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            if self.batch_bundler:
+                response = self.batch_bundler.add_request(
+                    messages=llm_messages,
+                    response_format={"type": "json_object"}
+                )
+                if isinstance(response, Exception):
+                    raise response
+            else:
+                response = self.llm.generate_response(
+                    messages=llm_messages,
+                    response_format={"type": "json_object"},
+                )
         except Exception as e:
             logger.error(f"LLM extraction failed: {e}")
             return []
