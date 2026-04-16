@@ -83,6 +83,48 @@ def build_memory() -> Memory:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Seeded memory factory — points at a pre-populated persistent collection
+# ─────────────────────────────────────────────────────────────────────────────
+SEED_DIR          = os.path.join(os.path.dirname(__file__), "data")
+SEED_QDRANT_PATH  = os.path.join(SEED_DIR, "seeded_qdrant")
+SEED_COLLECTION   = "bench_seeded"
+SEED_HISTORY_DB   = os.path.join(SEED_DIR, "history_seeded.db")
+
+
+def build_seeded_memory() -> Memory:
+    """
+    Connect to the pre-seeded Qdrant collection created by seed.py.
+    Run `python benchmarks/seed.py` once before using this.
+    """
+    if not os.path.isdir(SEED_QDRANT_PATH):
+        raise RuntimeError(
+            f"Seeded collection not found at {SEED_QDRANT_PATH}.\n"
+            "Run:  python benchmarks/seed.py"
+        )
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    config = MemoryConfig(
+        vector_store=VectorStoreConfig(
+            provider="qdrant",
+            config={
+                "collection_name": SEED_COLLECTION,
+                "embedding_model_dims": 768,
+                "path": SEED_QDRANT_PATH,
+            },
+        ),
+        llm=LlmConfig(
+            provider="ollama",
+            config={"model": "llama3.2:1b", "ollama_base_url": ollama_url, "temperature": 0},
+        ),
+        embedder=EmbedderConfig(
+            provider="ollama",
+            config={"model": "nomic-embed-text", "ollama_base_url": ollama_url, "embedding_dims": 768},
+        ),
+        history_db_path=SEED_HISTORY_DB,
+    )
+    return Memory(config)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Generic method wrapper
 # ─────────────────────────────────────────────────────────────────────────────
 def wrap(method: Callable, before: Callable = None, after: Callable = None) -> Callable:
