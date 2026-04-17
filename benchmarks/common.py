@@ -1,5 +1,32 @@
 """
 Shared utilities for all mem0 benchmark experiments.
+
+LLM provider is controlled by the LLM_PROVIDER environment variable.
+Supported values:
+
+  azure_openai  (default)
+    LLM_AZURE_ENDPOINT, LLM_AZURE_OPENAI_API_KEY,
+    LLM_AZURE_DEPLOYMENT, LLM_AZURE_API_VERSION
+
+  ollama
+    OLLAMA_BASE_URL   (default: http://localhost:11434)
+    LLM_MODEL         (default: llama3.2:1b)
+
+  vllm
+    VLLM_BASE_URL     (default: http://localhost:8000/v1)
+    VLLM_API_KEY      (default: vllm-api-key)
+    LLM_MODEL         (required)
+
+  openai            (also works for llama.cpp OpenAI-compatible server)
+    OPENAI_API_KEY
+    LLM_BASE_URL      (override for llama.cpp: http://localhost:8080/v1)
+    LLM_MODEL         (required)
+
+Embedder is always Ollama nomic-embed-text (local):
+  OLLAMA_BASE_URL   (default: http://localhost:11434)
+
+Rate limiting (Azure only — 280 calls/min by default):
+  LLM_RATE_LIMIT    (calls/min, default: 280 for azure_openai, 0 = disabled)
 """
 
 import os
@@ -10,6 +37,44 @@ import time
 import uuid
 from functools import wraps
 from typing import Callable, Dict, List
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Token-bucket rate limiter (used for Azure to stay under API limits)
+# ─────────────────────────────────────────────────────────────────────────────
+class RateLimiter:
+    """
+    Token bucket: allows at most `rate_per_min` calls per minute.
+    Threads block until a token is available.
+    """
+    def __init__(self, rate_per_min: int):
+        self._rate   = rate_per_min / 60.0
+        self._tokens = self._rate            # start with 1 second worth only
+        self._max    = float(rate_per_min)
+        self._last   = time.monotonic()
+        self._lock   = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._tokens = min(
+                    self._max,
+                    self._tokens + (now - self._last) * self._rate,
+                )
+                self._last = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+            time.sleep(0.05)
+
+    def wrap(self, method):
+        @wraps(method)
+        def wrapper(*args, **kwargs):
+            self.acquire()
+            return method(*args, **kwargs)
+        return wrapper
+
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -55,40 +120,93 @@ def make_messages(idx: int) -> List[Dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Memory factory — local Qdrant + Ollama
+# LLM config builder — switches on LLM_PROVIDER env var
+# ─────────────────────────────────────────────────────────────────────────────
+EMBEDDING_DIMS = 768   # nomic-embed-text (Ollama)
+
+
+def _build_llm_config() -> LlmConfig:
+    provider = os.getenv("LLM_PROVIDER", "azure_openai").lower()
+
+    if provider == "azure_openai":
+        return LlmConfig(provider="azure_openai", config={"temperature": 0})
+
+    elif provider == "ollama":
+        return LlmConfig(provider="ollama", config={
+            "model":            os.getenv("LLM_MODEL", "llama3.2:1b"),
+            "ollama_base_url":  os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            "temperature":      0,
+        })
+
+    elif provider == "vllm":
+        return LlmConfig(provider="vllm", config={
+            "model":           os.getenv("LLM_MODEL", "Qwen/Qwen2.5-32B-Instruct"),
+            "vllm_base_url":   os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1"),
+            "api_key":         os.getenv("VLLM_API_KEY", "vllm-api-key"),
+            "temperature":     0,
+        })
+
+    elif provider == "openai":
+        # Also works for llama.cpp (set LLM_BASE_URL=http://localhost:8080/v1)
+        cfg = {
+            "model":       os.getenv("LLM_MODEL", "gpt-4o"),
+            "temperature": 0,
+        }
+        if os.getenv("LLM_BASE_URL"):
+            cfg["openai_base_url"] = os.getenv("LLM_BASE_URL")
+        return LlmConfig(provider="openai", config=cfg)
+
+    else:
+        raise ValueError(
+            f"Unknown LLM_PROVIDER='{provider}'. "
+            "Supported: azure_openai, ollama, vllm, openai"
+        )
+
+
+def _apply_rate_limiter(mem: Memory) -> Memory:
+    """Apply rate limiter for providers that have API rate limits."""
+    provider  = os.getenv("LLM_PROVIDER", "azure_openai").lower()
+    # Default: 280/min for azure, 0 (disabled) for everything else
+    default   = 280 if provider == "azure_openai" else 0
+    rate      = int(os.getenv("LLM_RATE_LIMIT", str(default)))
+    if rate > 0:
+        limiter = RateLimiter(rate_per_min=rate)
+        mem.llm.generate_response = limiter.wrap(mem.llm.generate_response)
+    return mem
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Memory factories
 # ─────────────────────────────────────────────────────────────────────────────
 def build_memory() -> Memory:
-    tmp = tempfile.mkdtemp(prefix="mem0_bench_")
+    tmp        = tempfile.mkdtemp(prefix="mem0_bench_")
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     config = MemoryConfig(
         vector_store=VectorStoreConfig(
             provider="qdrant",
             config={
-                "collection_name": f"bench_{uuid.uuid4().hex[:8]}",
-                "embedding_model_dims": 768,
-                "path": tmp,
+                "collection_name":     f"bench_{uuid.uuid4().hex[:8]}",
+                "embedding_model_dims": EMBEDDING_DIMS,
+                "path":                tmp,
             },
         ),
-        llm=LlmConfig(
-            provider="ollama",
-            config={"model": "llama3.2:1b", "ollama_base_url": ollama_url, "temperature": 0},
-        ),
+        llm=_build_llm_config(),
         embedder=EmbedderConfig(
             provider="ollama",
-            config={"model": "nomic-embed-text", "ollama_base_url": ollama_url, "embedding_dims": 768},
+            config={"model": "nomic-embed-text", "ollama_base_url": ollama_url, "embedding_dims": EMBEDDING_DIMS},
         ),
         history_db_path=os.path.join(tmp, "history.db"),
     )
-    return Memory(config)
+    return _apply_rate_limiter(Memory(config))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Seeded memory factory — points at a pre-populated persistent collection
+# Seeded memory factory — points at pre-populated persistent collection
 # ─────────────────────────────────────────────────────────────────────────────
-SEED_DIR          = os.path.join(os.path.dirname(__file__), "data")
-SEED_QDRANT_PATH  = os.path.join(SEED_DIR, "seeded_qdrant")
-SEED_COLLECTION   = "bench_seeded"
-SEED_HISTORY_DB   = os.path.join(SEED_DIR, "history_seeded.db")
+SEED_DIR         = os.path.join(os.path.dirname(__file__), "data")
+SEED_QDRANT_PATH = os.path.join(SEED_DIR, "seeded_qdrant")
+SEED_COLLECTION  = "bench_seeded"
+SEED_HISTORY_DB  = os.path.join(SEED_DIR, "history_seeded.db")
 
 
 def build_seeded_memory() -> Memory:
@@ -106,32 +224,25 @@ def build_seeded_memory() -> Memory:
         vector_store=VectorStoreConfig(
             provider="qdrant",
             config={
-                "collection_name": SEED_COLLECTION,
-                "embedding_model_dims": 768,
-                "path": SEED_QDRANT_PATH,
+                "collection_name":     SEED_COLLECTION,
+                "embedding_model_dims": EMBEDDING_DIMS,
+                "path":                SEED_QDRANT_PATH,
             },
         ),
-        llm=LlmConfig(
-            provider="ollama",
-            config={"model": "llama3.2:1b", "ollama_base_url": ollama_url, "temperature": 0},
-        ),
+        llm=_build_llm_config(),
         embedder=EmbedderConfig(
             provider="ollama",
-            config={"model": "nomic-embed-text", "ollama_base_url": ollama_url, "embedding_dims": 768},
+            config={"model": "nomic-embed-text", "ollama_base_url": ollama_url, "embedding_dims": EMBEDDING_DIMS},
         ),
         history_db_path=SEED_HISTORY_DB,
     )
-    return Memory(config)
+    return _apply_rate_limiter(Memory(config))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Generic method wrapper
 # ─────────────────────────────────────────────────────────────────────────────
 def wrap(method: Callable, before: Callable = None, after: Callable = None) -> Callable:
-    """
-    Wraps a bound method: calls before() on entry, after(elapsed) on exit.
-    Both are optional.
-    """
     @wraps(method)
     def wrapper(*args, **kwargs):
         if before:

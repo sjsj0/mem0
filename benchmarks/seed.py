@@ -5,7 +5,7 @@ Run this ONCE before realistic benchmark experiments (exp_trace_realistic.py).
 
 How it works:
   - Generates N synthetic memory texts per user from templates
-  - Uses random 768-dim unit vectors (no Ollama needed — fast bulk insert)
+  - Uses random 1536-dim unit vectors (no API calls needed — fast bulk insert)
   - Inserts directly into Qdrant bypassing mem0's add() pipeline
   - Saves to benchmarks/data/seeded_qdrant/
 

@@ -188,3 +188,4 @@ qdrant_storage/
 testing.ipynb
 benchmarks/data/
 benchmarks/data/
+benchmarks/.env

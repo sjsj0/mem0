@@ -41,7 +41,7 @@ try:
 except ImportError:
     raise SystemExit("psutil required: pip install psutil")
 
-from benchmarks.common import build_memory, make_messages
+from benchmarks.common import build_seeded_memory as build_memory, make_messages
 
 for _log in ("mem0", "qdrant_client", "httpx", "openai", "httpcore", "ollama"):
     logging.getLogger(_log).setLevel(logging.WARNING)
