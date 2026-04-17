@@ -53,8 +53,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from mem0 import Memory
 from mem0.configs.base import MemoryConfig
 from mem0.vector_stores.configs import VectorStoreConfig
-from mem0.llms.configs import LlmConfig
 from mem0.embeddings.configs import EmbedderConfig
+from benchmarks.common import EMBEDDING_DIMS, _build_llm_config
 
 import matplotlib
 matplotlib.use("Agg")
@@ -190,7 +190,8 @@ class TimedMemory(Memory):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Build a fresh isolated Memory instance (local Qdrant, Ollama LLM + embedder)
+# Build a fresh isolated Memory instance.
+# LLM provider is selected via shared benchmark env logic.
 # ─────────────────────────────────────────────────────────────────────────────
 def build_memory() -> TimedMemory:
     tmp = tempfile.mkdtemp(prefix="mem0_bench_")
@@ -201,24 +202,17 @@ def build_memory() -> TimedMemory:
             provider="qdrant",
             config={
                 "collection_name": f"bench_{uuid.uuid4().hex[:8]}",
-                "embedding_model_dims": 768,
+                "embedding_model_dims": EMBEDDING_DIMS,
                 "path": tmp,
             },
         ),
-        llm=LlmConfig(
-            provider="ollama",
-            config={
-                "model": "llama3.2:1b",
-                "ollama_base_url": ollama_url,
-                "temperature": 0,
-            },
-        ),
+        llm=_build_llm_config(),
         embedder=EmbedderConfig(
             provider="ollama",
             config={
                 "model": "nomic-embed-text",
                 "ollama_base_url": ollama_url,
-                "embedding_dims": 768,
+                "embedding_dims": EMBEDDING_DIMS,
             },
         ),
         history_db_path=os.path.join(tmp, "history.db"),
@@ -485,8 +479,24 @@ def main():
                         help="File to save the latency breakdown plot")
     args = parser.parse_args()
 
-    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    print(f"Using Ollama at {ollama_url}  (llm=llama3.2:1b  embedder=nomic-embed-text)")
+    provider = os.getenv("LLM_PROVIDER", "azure_openai").lower()
+    if provider == "vllm":
+        print(
+            f"Using vLLM at {os.getenv('VLLM_BASE_URL', 'http://localhost:8000/v1')} "
+            f"(llm={os.getenv('LLM_MODEL', 'Qwen/Qwen2.5-32B-Instruct')}  embedder=nomic-embed-text)"
+        )
+    elif provider == "ollama":
+        print(
+            f"Using Ollama at {os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')} "
+            f"(llm={os.getenv('LLM_MODEL', 'llama3.2:1b')}  embedder=nomic-embed-text)"
+        )
+    elif provider == "openai":
+        print(
+            f"Using OpenAI-compatible endpoint {os.getenv('LLM_BASE_URL', 'default OpenAI')} "
+            f"(llm={os.getenv('LLM_MODEL', 'gpt-4o')}  embedder=nomic-embed-text)"
+        )
+    else:
+        print("Using Azure OpenAI (embedder=nomic-embed-text)")
 
     all_data: Dict[int, List[Dict[str, float]]] = {}
     for c in sorted(set(args.concurrency)):

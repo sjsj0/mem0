@@ -205,7 +205,7 @@ def print_trace_summary(events: List[Tuple], total_ms: float):
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Exp H2: Gantt trace against seeded 10k collection")
-    parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--plot", type=str, default=f"{GRAPHS_DIR}/exp_trace_realistic.png")
     args = parser.parse_args()
 

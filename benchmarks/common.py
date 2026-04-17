@@ -15,7 +15,7 @@ Supported values:
   vllm
     VLLM_BASE_URL     (default: http://localhost:8000/v1)
     VLLM_API_KEY      (default: vllm-api-key)
-    LLM_MODEL         (required)
+    LLM_MODEL         (optional; auto-resolved from /v1/models if missing/invalid)
 
   openai            (also works for llama.cpp OpenAI-compatible server)
     OPENAI_API_KEY
@@ -27,6 +27,12 @@ Embedder is always Ollama nomic-embed-text (local):
 
 Rate limiting (Azure only — 280 calls/min by default):
   LLM_RATE_LIMIT    (calls/min, default: 280 for azure_openai, 0 = disabled)
+
+Seed controls:
+    MEM0_BENCH_SKIP_SEED   (1/true/yes: run seeded experiments without seed data)
+
+Entity-linking control:
+    MEM0_BENCH_ENABLE_ENTITY_LINKING (0/false/no/off default; 1=true to enable)
 """
 
 import os
@@ -42,6 +48,31 @@ from typing import Callable, Dict, List
 # ─────────────────────────────────────────────────────────────────────────────
 # Token-bucket rate limiter (used for Azure to stay under API limits)
 # ─────────────────────────────────────────────────────────────────────────────
+def _load_local_env_file() -> None:
+    """Load benchmarks/.env into process env if present (without overriding existing vars)."""
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if not os.path.isfile(env_path):
+        return
+
+    preexisting = set(os.environ.keys())
+    loaded_here = set()
+
+    with open(env_path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and (key in loaded_here or key not in preexisting):
+                os.environ[key] = value
+                loaded_here.add(key)
+
+
+_load_local_env_file()
+
+
 class RateLimiter:
     """
     Token bucket: allows at most `rate_per_min` calls per minute.
@@ -83,6 +114,7 @@ from mem0.configs.base import MemoryConfig
 from mem0.vector_stores.configs import VectorStoreConfig
 from mem0.llms.configs import LlmConfig
 from mem0.embeddings.configs import EmbedderConfig
+from mem0.memory import main as memory_main
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,12 +207,25 @@ def _apply_rate_limiter(mem: Memory) -> Memory:
     return mem
 
 
+def _configure_entity_linking_for_benchmarks() -> None:
+    """Disable entity-linking by default to avoid embedded Qdrant path lock conflicts."""
+    enabled = os.getenv("MEM0_BENCH_ENABLE_ENTITY_LINKING", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled:
+        memory_main.extract_entities_batch = lambda texts: [[] for _ in texts]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Memory factories
 # ─────────────────────────────────────────────────────────────────────────────
 def build_memory() -> Memory:
     tmp        = tempfile.mkdtemp(prefix="mem0_bench_")
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    _configure_entity_linking_for_benchmarks()
     config = MemoryConfig(
         vector_store=VectorStoreConfig(
             provider="qdrant",
@@ -214,12 +259,18 @@ def build_seeded_memory() -> Memory:
     Connect to the pre-seeded Qdrant collection created by seed.py.
     Run `python benchmarks/seed.py` once before using this.
     """
+    skip_seed = os.getenv("MEM0_BENCH_SKIP_SEED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if skip_seed:
+        # Fallback mode for quick local iteration where realistic seeded data is not required.
+        return build_memory()
+
     if not os.path.isdir(SEED_QDRANT_PATH):
         raise RuntimeError(
             f"Seeded collection not found at {SEED_QDRANT_PATH}.\n"
             "Run:  python benchmarks/seed.py"
         )
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    _configure_entity_linking_for_benchmarks()
     config = MemoryConfig(
         vector_store=VectorStoreConfig(
             provider="qdrant",

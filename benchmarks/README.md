@@ -27,6 +27,14 @@ cd /Users/saraagarwal/mem0
 python benchmarks/seed.py --memories-per-user 10000 --users 5
 ```
 
+If you want to skip seeding for quick local runs, set:
+
+```bash
+export MEM0_BENCH_SKIP_SEED=1
+```
+
+This falls back to a fresh local collection for experiments that normally require seeded data.
+
 ---
 
 ## Experiments

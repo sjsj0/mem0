@@ -3,50 +3,50 @@
     "delay_ms": 0,
     "concurrency": 8,
     "n": 15,
-    "writes_per_sec": 0.308,
-    "avg_ms": 18656.6,
-    "p50_ms": 22990.7,
-    "p95_ms": 26130.9,
-    "p99_ms": 27675.0
+    "writes_per_sec": 0.335,
+    "avg_ms": 22199.5,
+    "p50_ms": 29759.2,
+    "p95_ms": 31167.9,
+    "p99_ms": 31179.1
   },
   {
     "delay_ms": 50,
     "concurrency": 8,
     "n": 15,
-    "writes_per_sec": 0.269,
-    "avg_ms": 20630.5,
-    "p50_ms": 23325.4,
-    "p95_ms": 32336.7,
-    "p99_ms": 34252.2
+    "writes_per_sec": 1.004,
+    "avg_ms": 5832.6,
+    "p50_ms": 5590.0,
+    "p95_ms": 10280.0,
+    "p99_ms": 10324.4
   },
   {
     "delay_ms": 100,
     "concurrency": 8,
     "n": 15,
-    "writes_per_sec": 0.303,
-    "avg_ms": 19661.4,
-    "p50_ms": 23947.3,
-    "p95_ms": 27459.8,
-    "p99_ms": 27644.0
+    "writes_per_sec": 1.058,
+    "avg_ms": 7036.8,
+    "p50_ms": 6921.2,
+    "p95_ms": 12356.3,
+    "p99_ms": 12421.7
   },
   {
     "delay_ms": 200,
     "concurrency": 8,
     "n": 15,
-    "writes_per_sec": 0.301,
-    "avg_ms": 19865.5,
-    "p50_ms": 24007.3,
-    "p95_ms": 27617.5,
-    "p99_ms": 27638.7
+    "writes_per_sec": 2.626,
+    "avg_ms": 2699.0,
+    "p50_ms": 1814.9,
+    "p95_ms": 4152.1,
+    "p99_ms": 4179.6
   },
   {
     "delay_ms": 500,
     "concurrency": 8,
     "n": 15,
-    "writes_per_sec": 0.276,
-    "avg_ms": 20980.4,
-    "p50_ms": 24064.0,
-    "p95_ms": 29377.8,
-    "p99_ms": 31080.4
+    "writes_per_sec": 1.402,
+    "avg_ms": 4220.8,
+    "p50_ms": 4741.8,
+    "p95_ms": 5719.1,
+    "p99_ms": 5783.3
   }
 ]
