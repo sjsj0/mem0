@@ -269,10 +269,10 @@ def build_memory(args) -> TimedMemory:
             args.vllm_api_key
         ),
         embedder=EmbedderConfig(
-            provider="ollama",
+            provider=args.embedder_provider,
             config={
-                "model": "nomic-embed-text",
-                "ollama_base_url": ollama_url,
+                "model": args.embedder_model,
+                "ollama_base_url": ollama_url if args.embedder_provider == "ollama" else None,
                 "embedding_dims": 768,
             },
         ),
@@ -560,6 +560,12 @@ def main():
     parser.add_argument("--vllm-api-key", type=str, default="vllm-api-key",
                         help="vLLM API key")
     
+    # Embedder
+    parser.add_argument("--embedder-provider", type=str, default="ollama",
+                        help="Embedder provider (default: ollama, try 'huggingface' for local-only)")
+    parser.add_argument("--embedder-model", type=str, default="nomic-embed-text",
+                        help="Embedder model (default: nomic-embed-text)")
+    
     # Speculative Decoding & Batching
     parser.add_argument("--speculative", action="store_true",
                         help="Activate speculative decoding (background reconciliation)")
@@ -587,6 +593,7 @@ def main():
     args = parser.parse_args()
 
     print(f"Primary Model: {args.model} (Provider: {args.provider})")
+    print(f"Embedder: {args.embedder_model} (Provider: {args.embedder_provider})")
     if args.speculative:
         print(f"Speculative Decoding: ON (Validation Model: {args.v_llm_model}, Provider: {args.v_llm_provider})")
         if args.batch_url:
