@@ -229,31 +229,44 @@ def build_memory(args) -> TimedMemory:
     else:
         vs_config["path"] = tmp
 
+    def get_llm_config(provider, model, ollama_url, vllm_url, vllm_api_key, batch_url=None):
+        cfg = {
+            "model": model,
+            "temperature": 0,
+        }
+        if provider == "ollama":
+            cfg["ollama_base_url"] = ollama_url
+        elif provider == "vllm":
+            cfg["vllm_base_url"] = vllm_url
+            cfg["api_key"] = vllm_api_key
+        
+        if batch_url:
+            cfg["batch_url"] = batch_url
+            
+        return LlmConfig(provider=provider, config=cfg)
+
     validation_llm = None
     if args.speculative:
-        validation_llm = LlmConfig(
-            provider=args.v_llm_provider,
-            config={
-                "model": args.v_llm_model,
-                "ollama_base_url": ollama_url if args.v_llm_provider == "ollama" else None,
-                "temperature": 0,
-            },
+        validation_llm = get_llm_config(
+            args.v_llm_provider, 
+            args.v_llm_model, 
+            ollama_url, 
+            args.v_llm_url or args.vllm_url, 
+            args.v_llm_api_key or args.vllm_api_key, 
+            args.batch_url
         )
-        if args.batch_url:
-            validation_llm.config["batch_url"] = args.batch_url
 
     config = MemoryConfig(
         vector_store=VectorStoreConfig(
             provider="qdrant",
             config=vs_config,
         ),
-        llm=LlmConfig(
-            provider="ollama",
-            config={
-                "model": args.model,
-                "ollama_base_url": ollama_url,
-                "temperature": 0,
-            },
+        llm=get_llm_config(
+            args.provider, 
+            args.model, 
+            ollama_url, 
+            args.vllm_url, 
+            args.vllm_api_key
         ),
         embedder=EmbedderConfig(
             provider="ollama",
@@ -536,10 +549,16 @@ def main():
                         help="Write requests per concurrency level (default: 20)")
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 2, 4],
                         help="Concurrency levels to test (default: 1 2 4)")
+    parser.add_argument("--provider", type=str, default="ollama",
+                        help="Primary LLM provider (default: ollama)")
     parser.add_argument("--model", type=str, default="llama3.2:1b",
                         help="Primary LLM model (default: llama3.2:1b)")
     parser.add_argument("--ollama-url", type=str, default="http://localhost:11434",
                         help="Ollama base URL")
+    parser.add_argument("--vllm-url", type=str, default="http://localhost:8000/v1",
+                        help="vLLM base URL")
+    parser.add_argument("--vllm-api-key", type=str, default="vllm-api-key",
+                        help="vLLM API key")
     
     # Speculative Decoding & Batching
     parser.add_argument("--speculative", action="store_true",
@@ -548,6 +567,10 @@ def main():
                         help="Validation LLM model (default: llama3:8b)")
     parser.add_argument("--v-llm-provider", type=str, default="ollama",
                         help="Validation LLM provider (default: ollama)")
+    parser.add_argument("--v-llm-url", type=str, default=None,
+                        help="Validation vLLM base URL (defaults to --vllm-url if not set)")
+    parser.add_argument("--v-llm-api-key", type=str, default=None,
+                        help="Validation vLLM API key (defaults to --vllm-api-key if not set)")
     parser.add_argument("--batch-url", type=str, default=None,
                         help="URL for batch LLM inference (activates batching if set)")
     
@@ -563,9 +586,9 @@ def main():
                         help="File to save the latency breakdown plot")
     args = parser.parse_args()
 
-    print(f"Primary Model: {args.model}")
+    print(f"Primary Model: {args.model} (Provider: {args.provider})")
     if args.speculative:
-        print(f"Speculative Decoding: ON (Validation Model: {args.v_llm_model})")
+        print(f"Speculative Decoding: ON (Validation Model: {args.v_llm_model}, Provider: {args.v_llm_provider})")
         if args.batch_url:
             print(f"Batching: ON (URL: {args.batch_url})")
     if args.qdrant_url:
