@@ -43,7 +43,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 for _log in ("mem0", "qdrant_client", "httpx", "openai", "httpcore", "ollama"):
     logging.getLogger(_log).setLevel(logging.WARNING)
@@ -63,23 +63,6 @@ import numpy as np
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Timing wrapper
-# ─────────────────────────────────────────────────────────────────────────────
-def timed(method: Callable, bucket: str, store: List[Dict]) -> Callable:
-    """
-    Wraps a bound method so every call appends {bucket: elapsed_seconds}
-    to `store`. Transparent to the caller — same args, same return value.
-    """
-    @wraps(method)
-    def wrapper(*args, **kwargs):
-        t0 = time.perf_counter()
-        result = method(*args, **kwargs)
-        store.append({bucket: time.perf_counter() - t0})
-        return result
-    return wrapper
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # TimedMemory
 # ─────────────────────────────────────────────────────────────────────────────
 class TimedMemory(Memory):
@@ -95,20 +78,26 @@ class TimedMemory(Memory):
     def __init__(self, config: MemoryConfig = MemoryConfig()):
         super().__init__(config)
         self._call_log: List[Dict[str, float]] = []
+        self._bg_log: List[Dict[str, float]] = []
         self._log_lock = threading.Lock()
+        self._last_bg_future = None
         self._patch_methods()
 
     def _patch_methods(self):
         log = self._call_log
         lock = self._log_lock
 
-        def timed_append(method, bucket):
+        def timed_append(method, bucket, is_bg=False):
             @wraps(method)
             def wrapper(*args, **kwargs):
                 t0 = time.perf_counter()
                 result = method(*args, **kwargs)
+                elapsed = time.perf_counter() - t0
                 with lock:
-                    log.append({bucket: time.perf_counter() - t0})
+                    if is_bg:
+                        self._bg_log.append({bucket: elapsed})
+                    else:
+                        log.append({bucket: elapsed})
                 return result
             return wrapper
 
@@ -117,10 +106,28 @@ class TimedMemory(Memory):
             self.llm.generate_response, "llm_extract"
         )
 
-        # Embedder — separate buckets for query vs batch vs entity embeds
-        # We can't distinguish call sites from outside, so we use a counter:
-        # call 1 = query embed (vs_search), call 2 = batch embed (memories),
-        # call 3+ = entity embeds. Simpler: just label all as embed_* by type.
+        # Validation LLM (Speculative)
+        if self.validation_llm:
+            self.validation_llm.generate_response = timed_append(
+                self.validation_llm.generate_response, "v_llm_validate", is_bg=True
+            )
+            
+            # Patch executor to capture the future
+            original_submit = self._validation_executor.submit
+            def timed_submit(fn, *args, **kwargs):
+                future = original_submit(fn, *args, **kwargs)
+                self._last_bg_future = future
+                return future
+            self._validation_executor.submit = timed_submit
+            
+        # Batch Bundler
+        if hasattr(self, "validation_batch_bundler") and self.validation_batch_bundler:
+            original_add = self.validation_batch_bundler.add_request
+            self.validation_batch_bundler.add_request = timed_append(
+                original_add, "v_llm_batch_wait", is_bg=True
+            )
+
+        # Embedder
         original_embed = self.embedding_model.embed
         original_embed_batch = self.embedding_model.embed_batch
 
@@ -144,7 +151,6 @@ class TimedMemory(Memory):
             return
         try:
             es = self.entity_store  # triggers lazy init
-            log = self._call_log
             lock = self._log_lock
 
             def timed_append(method, bucket):
@@ -153,7 +159,7 @@ class TimedMemory(Memory):
                     t0 = time.perf_counter()
                     result = method(*args, **kwargs)
                     with lock:
-                        log.append({bucket: time.perf_counter() - t0})
+                        self._call_log.append({bucket: time.perf_counter() - t0})
                     return result
                 return wrapper
 
@@ -166,18 +172,34 @@ class TimedMemory(Memory):
 
     def add(self, messages, **kwargs):
         self._ensure_entity_patched()
-        t_wall = time.perf_counter()
+        t_start = time.perf_counter()
         result = super().add(messages, **kwargs)
-        total = time.perf_counter() - t_wall
+        t_e2e = time.perf_counter() - t_start
+
+        # If speculative was active, wait for the bg task to get "e2e + bg"
+        t_total_inc_bg = t_e2e
+        if self._last_bg_future:
+            try:
+                self._last_bg_future.result()
+                t_total_inc_bg = time.perf_counter() - t_start
+            except Exception:
+                pass
+            self._last_bg_future = None
 
         # drain the call log accumulated during this add() call
         with self._log_lock:
             entries = list(self._call_log)
             self._call_log.clear()
+            bg_entries = list(self._bg_log)
+            self._bg_log.clear()
 
         # merge into a single dict, summing repeated buckets
-        phases: Dict[str, float] = {"total": total}
-        for entry in entries:
+        phases: Dict[str, float] = {
+            "e2e": t_e2e,
+            "e2e_inc_bg": t_total_inc_bg,
+            "total": t_e2e # for backward compatibility with plotting logic
+        }
+        for entry in entries + bg_entries:
             for bucket, elapsed in entry.items():
                 phases[bucket] = phases.get(bucket, 0.0) + elapsed
 
@@ -190,25 +212,45 @@ class TimedMemory(Memory):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Build a fresh isolated Memory instance (local Qdrant, Ollama LLM + embedder)
+# Build a fresh isolated Memory instance
 # ─────────────────────────────────────────────────────────────────────────────
-def build_memory() -> TimedMemory:
+def build_memory(args) -> TimedMemory:
     tmp = tempfile.mkdtemp(prefix="mem0_bench_")
-    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    ollama_url = os.getenv("OLLAMA_BASE_URL", args.ollama_url)
+
+    vs_config = {
+        "collection_name": f"bench_{uuid.uuid4().hex[:8]}",
+        "embedding_model_dims": 768,
+    }
+    if args.qdrant_url:
+        vs_config["url"] = args.qdrant_url
+        if args.qdrant_api_key:
+            vs_config["api_key"] = args.qdrant_api_key
+    else:
+        vs_config["path"] = tmp
+
+    validation_llm = None
+    if args.speculative:
+        validation_llm = LlmConfig(
+            provider=args.v_llm_provider,
+            config={
+                "model": args.v_llm_model,
+                "ollama_base_url": ollama_url if args.v_llm_provider == "ollama" else None,
+                "temperature": 0,
+            },
+        )
+        if args.batch_url:
+            validation_llm.config["batch_url"] = args.batch_url
 
     config = MemoryConfig(
         vector_store=VectorStoreConfig(
             provider="qdrant",
-            config={
-                "collection_name": f"bench_{uuid.uuid4().hex[:8]}",
-                "embedding_model_dims": 768,
-                "path": tmp,
-            },
+            config=vs_config,
         ),
         llm=LlmConfig(
             provider="ollama",
             config={
-                "model": "llama3.2:1b",
+                "model": args.model,
                 "ollama_base_url": ollama_url,
                 "temperature": 0,
             },
@@ -222,7 +264,13 @@ def build_memory() -> TimedMemory:
             },
         ),
         history_db_path=os.path.join(tmp, "history.db"),
+        validation_llm=validation_llm,
     )
+    
+    # Batching can also be enabled via ENV
+    if args.batch_url:
+        os.environ["MEM0_VALIDATION_BATCH_URL"] = args.batch_url
+        
     return TimedMemory(config)
 
 
@@ -271,6 +319,12 @@ def run_one(mem: TimedMemory, request_idx: int) -> Dict[str, float]:
     except Exception as e:
         logging.error(f"req {request_idx} failed: {e}")
         return {}
+    
+    # Small wait to allow background tasks to at least start/queue
+    # if we want to capture their start. But speculative decoding is background,
+    # so we might not see the full v_llm_validate in the same 'total' bucket.
+    # However, the TimedMemory.add implementation clears BG log too.
+    
     with mem._log_lock:
         return mem._timings[-1].copy() if hasattr(mem, "_timings") and mem._timings else {}
 
@@ -278,12 +332,12 @@ def run_one(mem: TimedMemory, request_idx: int) -> Dict[str, float]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Benchmark runner for one concurrency level
 # ─────────────────────────────────────────────────────────────────────────────
-def run_benchmark(n_requests: int, concurrency: int) -> List[Dict[str, float]]:
+def run_benchmark(n_requests: int, concurrency: int, args) -> List[Dict[str, float]]:
     print(f"\n{'─'*60}")
     print(f"  concurrency={concurrency}   total_requests={n_requests}")
     print(f"{'─'*60}")
 
-    mem = build_memory()
+    mem = build_memory(args)
     results: List[Dict[str, float]] = []
     results_lock = threading.Lock()
 
@@ -299,9 +353,8 @@ def run_benchmark(n_requests: int, concurrency: int) -> List[Dict[str, float]]:
                     print(
                         f"  req {idx:3d} | total {r.get('total', 0)*1000:6.0f}ms"
                         f" | llm {r.get('llm_extract', 0)*1000:5.0f}ms"
-                        f" | embed_batch {r.get('embed_batch', 0)*1000:5.0f}ms"
+                        f" | v_llm {r.get('v_llm_validate', r.get('v_llm_batch_wait', 0))*1000:5.0f}ms"
                         f" | vs_search {r.get('vs_search', 0)*1000:5.0f}ms"
-                        f" | vs_insert {r.get('vs_insert', 0)*1000:5.0f}ms"
                     )
             except Exception as e:
                 print(f"  req {idx}: ERROR {e}")
@@ -313,7 +366,11 @@ def run_benchmark(n_requests: int, concurrency: int) -> List[Dict[str, float]]:
 # Plotting
 # ─────────────────────────────────────────────────────────────────────────────
 PHASES = [
+    "e2e",
+    "e2e_inc_bg",
     "llm_extract",
+    "v_llm_validate",
+    "v_llm_batch_wait",
     "embed_single",
     "embed_batch",
     "vs_search",
@@ -329,7 +386,7 @@ PHASES = [
 COLORS = [
     "#e15759", "#4e79a7", "#76b7b2", "#f28e2b",
     "#59a14f", "#b07aa1", "#ff9da7", "#edc948",
-    "#9c755f", "#bab0ac", "#499894",
+    "#9c755f", "#bab0ac", "#499894", "#86bc25", "#00adff"
 ]
 
 
@@ -479,18 +536,44 @@ def main():
                         help="Write requests per concurrency level (default: 20)")
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 2, 4],
                         help="Concurrency levels to test (default: 1 2 4)")
+    parser.add_argument("--model", type=str, default="llama3.2:1b",
+                        help="Primary LLM model (default: llama3.2:1b)")
+    parser.add_argument("--ollama-url", type=str, default="http://localhost:11434",
+                        help="Ollama base URL")
+    
+    # Speculative Decoding & Batching
+    parser.add_argument("--speculative", action="store_true",
+                        help="Activate speculative decoding (background reconciliation)")
+    parser.add_argument("--v-llm-model", type=str, default="llama3:8b",
+                        help="Validation LLM model (default: llama3:8b)")
+    parser.add_argument("--v-llm-provider", type=str, default="ollama",
+                        help="Validation LLM provider (default: ollama)")
+    parser.add_argument("--batch-url", type=str, default=None,
+                        help="URL for batch LLM inference (activates batching if set)")
+    
+    # Qdrant Server
+    parser.add_argument("--qdrant-url", type=str, default=None,
+                        help="Qdrant server URL (e.g. http://localhost:6333)")
+    parser.add_argument("--qdrant-api-key", type=str, default=None,
+                        help="Qdrant API key")
+
     parser.add_argument("--output", type=str, default="benchmarks/benchmark_results.json",
                         help="File to save raw timings JSON")
     parser.add_argument("--plot", type=str, default="benchmarks/benchmark_latency.png",
                         help="File to save the latency breakdown plot")
     args = parser.parse_args()
 
-    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    print(f"Using Ollama at {ollama_url}  (llm=llama3.2:1b  embedder=nomic-embed-text)")
+    print(f"Primary Model: {args.model}")
+    if args.speculative:
+        print(f"Speculative Decoding: ON (Validation Model: {args.v_llm_model})")
+        if args.batch_url:
+            print(f"Batching: ON (URL: {args.batch_url})")
+    if args.qdrant_url:
+        print(f"Vector Store: Qdrant Server at {args.qdrant_url}")
 
     all_data: Dict[int, List[Dict[str, float]]] = {}
     for c in sorted(set(args.concurrency)):
-        all_data[c] = run_benchmark(n_requests=args.requests, concurrency=c)
+        all_data[c] = run_benchmark(n_requests=args.requests, concurrency=c, args=args)
 
     with open(args.output, "w") as f:
         json.dump({str(k): v for k, v in all_data.items()}, f, indent=2)

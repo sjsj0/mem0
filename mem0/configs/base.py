@@ -55,6 +55,10 @@ class MemoryConfig(BaseModel):
         description="Custom instructions for fact extraction",
         default=None,
     )
+    validation_llm: Optional[LlmConfig] = Field(
+        description="Configuration for the validation language model (speculative decoding)",
+        default=None,
+    )
 
 
 class AzureConfig(BaseModel):

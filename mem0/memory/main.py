@@ -9,6 +9,7 @@ import warnings
 from copy import deepcopy
 from datetime import datetime, timezone
 import threading
+import concurrent.futures
 import time
 from typing import Any, Dict, List, Optional
 
@@ -373,6 +374,18 @@ class Memory(MemoryBase):
                 config.reranker.provider,
                 config.reranker.config
             )
+        
+        self.validation_llm = None
+        if hasattr(self.config, "validation_llm") and self.config.validation_llm:
+            self.validation_llm = LlmFactory.create(
+                self.config.validation_llm.provider,
+                self.config.validation_llm.config
+            )
+            # Persistent thread pool for background reconciliation
+            self._validation_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.config.validation_llm.config.get("max_workers", 1),
+                thread_name_prefix="mem0-val"
+            )
 
         # Entity store is initialized lazily on first use
         self._entity_store = None
@@ -405,18 +418,19 @@ class Memory(MemoryBase):
                 self.config.vector_store.provider, telemetry_config
             )
 
-        # Batch inference support
-        self.batch_bundler = None
-        batch_url = os.environ.get("MEM0_BATCH_INFERENCE_URL") or self.config.llm.config.get("batch_url")
-        if batch_url:
-            batch_size = int(os.environ.get("MEM0_BATCH_SIZE", 10))
-            batch_timeout = float(os.environ.get("MEM0_BATCH_TIMEOUT", 0.05))
-            self.batch_bundler = LLMBatchBundler(
-                llm=self.llm,
-                batch_url=batch_url,
-                batch_size=batch_size,
-                timeout=batch_timeout
-            )
+        # Validation Batch inference support
+        self.validation_batch_bundler = None
+        if self.validation_llm:
+            v_batch_url = os.environ.get("MEM0_VALIDATION_BATCH_URL") or self.config.validation_llm.config.get("batch_url")
+            if v_batch_url:
+                v_batch_size = int(os.environ.get("MEM0_VALIDATION_BATCH_SIZE", 10))
+                v_batch_timeout = float(os.environ.get("MEM0_VALIDATION_BATCH_TIMEOUT", 0.5)) # Longer timeout for background
+                self.validation_batch_bundler = LLMBatchBundler(
+                    llm=self.validation_llm,
+                    batch_url=v_batch_url,
+                    batch_size=v_batch_size,
+                    timeout=v_batch_timeout
+                )
 
         capture_event("mem0.init", self, {"sync_type": "sync"})
 
@@ -689,18 +703,10 @@ class Memory(MemoryBase):
                 {"role": "user", "content": user_prompt},
             ]
 
-            if self.batch_bundler:
-                response = self.batch_bundler.add_request(
-                    messages=llm_messages,
-                    response_format={"type": "json_object"}
-                )
-                if isinstance(response, Exception):
-                    raise response
-            else:
-                response = self.llm.generate_response(
-                    messages=llm_messages,
-                    response_format={"type": "json_object"},
-                )
+            response = self.llm.generate_response(
+                messages=llm_messages,
+                response_format={"type": "json_object"},
+            )
         except Exception as e:
             logger.error(f"LLM extraction failed: {e}")
             return []
@@ -926,7 +932,74 @@ class Memory(MemoryBase):
             self,
             {"version": self.api_version, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"},
         )
+
+        # --- Speculative Validation ---
+        if self.validation_llm and extracted_memories:
+            self._validation_executor.submit(
+                self._reconcile_memory_v3,
+                llm_messages,
+                returned_memories,
+                deepcopy(metadata),
+                filters
+            )
+        # ------------------------------
+
         return returned_memories
+
+    def _reconcile_memory_v3(self, messages, fast_results, metadata, filters):
+        """
+        Background reconciliation for V3 Additive Pipeline.
+        Compares fast model extraction with accurate model extraction.
+        """
+        logger.info("Starting V3 speculative memory reconciliation")
+        try:
+            # 1. Get accurate extraction from validation LLM (using batching if configured)
+            if self.validation_batch_bundler:
+                response = self.validation_batch_bundler.add_request(
+                    messages=messages,
+                    response_format={"type": "json_object"}
+                )
+                if isinstance(response, Exception):
+                    raise response
+            else:
+                response = self.validation_llm.generate_response(
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                )
+            
+            response = remove_code_blocks(response)
+            if not response or not response.strip():
+                return
+            
+            accurate_memories = json.loads(response, strict=False).get("memory", [])
+            
+            # 2. Match Sets
+            fast_texts = {item["memory"] for item in fast_results}
+            acc_texts = {item.get("text") for item in accurate_memories if item.get("text")}
+            
+            # Case A: False Positives (Fast added it, but Accurate disagrees)
+            for fast in fast_results:
+                if fast.get("memory") not in acc_texts:
+                    logger.warning(f"Reconciliation V3: Deleting False Positive ADD: '{fast['memory']}'")
+                    try:
+                        self.delete(fast["id"])
+                    except Exception as e:
+                        logger.error(f"Failed to delete false positive {fast['id']}: {e}")
+            
+            # Case B: False Negatives (Accurate found it, but Fast missed it)
+            missing_memories = [acc for acc in accurate_memories if acc.get("text") and acc.get("text") not in fast_texts]
+            if missing_memories:
+                logger.info(f"Reconciliation V3: Found {len(missing_memories)} missing memories. Adding them...")
+                for missing in missing_memories:
+                    text = missing.get("text")
+                    try:
+                        embeddings = self.embedding_model.embed(text, "add")
+                        self._create_memory(text, {text: embeddings}, deepcopy(metadata))
+                    except Exception as e:
+                        logger.error(f"Failed to add missing memory '{text}': {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error during V3 memory reconciliation: {e}")
 
     def get(self, memory_id):
         """
