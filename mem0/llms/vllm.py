@@ -143,6 +143,7 @@ class VllmLLM(LLMBase):
             response.raise_for_status()
             try:
                 results = response.json()
+                print(f"\n[DEBUG] Full vLLM Batch Response: {str(results)[:500]}")
             except Exception as e:
                 logger.error(f"Failed to parse vLLM batch response as JSON: {e}")
                 logger.error(f"Raw response: {response.text[:500]}")
