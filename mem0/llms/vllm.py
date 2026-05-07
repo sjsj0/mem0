@@ -141,7 +141,12 @@ class VllmLLM(LLMBase):
         with httpx.Client() as client:
             response = client.post(batch_url, json=payload, headers=headers, timeout=60.0)
             response.raise_for_status()
-            results = response.json()
+            try:
+                results = response.json()
+            except Exception as e:
+                logger.error(f"Failed to parse vLLM batch response as JSON: {e}")
+                logger.error(f"Raw response: {response.text[:500]}")
+                raise
             
         # Parse each item in the results
         parsed_results = []
