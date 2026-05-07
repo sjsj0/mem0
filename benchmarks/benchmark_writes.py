@@ -240,9 +240,6 @@ def build_memory(args) -> TimedMemory:
             cfg["vllm_base_url"] = vllm_url
             cfg["api_key"] = vllm_api_key
         
-        if batch_url:
-            cfg["batch_url"] = batch_url
-            
         return LlmConfig(provider=provider, config=cfg)
 
     validation_llm = None
