@@ -150,9 +150,12 @@ class VllmLLM(LLMBase):
             
         # Parse each item in the results
         parsed_results = []
-        for result in results:
+        for i, result in enumerate(results):
+            if i == 0:
+                print(f"\n[DEBUG] vLLM Batch Item 0: {str(result)[:200]}")
+            
             if isinstance(result, str):
-                parsed_results.append(result)
+                parsed_res = result
             elif isinstance(result, dict) and "choices" in result:
                 # Wrap the result in a structure that _parse_response expects
                 class DummyObj:
@@ -165,9 +168,13 @@ class VllmLLM(LLMBase):
                             else:
                                 setattr(self, k, v)
                 
-                parsed_results.append(self._parse_response(DummyObj(result), None))
+                parsed_res = self._parse_response(DummyObj(result), None)
             else:
                 # Fallback
-                parsed_results.append(result)
+                parsed_res = result
+            
+            if i == 0:
+                print(f"[DEBUG] vLLM Parsed Result 0: {str(parsed_res)[:200]}")
+            parsed_results.append(parsed_res)
                 
         return parsed_results
