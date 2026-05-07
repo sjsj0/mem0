@@ -149,16 +149,23 @@ class VllmLLM(LLMBase):
                 logger.error(f"Raw response: {response.text[:500]}")
                 raise
             
-        # Parse each item in the results
+        # Parse the results
         parsed_results = []
-        for i, result in enumerate(results):
-            if i == 0:
-                print(f"\n[DEBUG] vLLM Batch Item 0: {str(result)[:200]}")
-            
-            if isinstance(result, str):
-                parsed_res = result
-            elif isinstance(result, dict) and "choices" in result:
-                # Wrap the result in a structure that _parse_response expects
+        
+        # New vLLM Batch Serving API: Returns a single ChatCompletion object 
+        # where each 'choice' corresponds to one set of messages in the input batch.
+        if isinstance(results, dict) and "choices" in results:
+            choices = results["choices"]
+            for choice in choices:
+                # Construct a dummy response object for each choice
+                dummy_response = {
+                    "id": results.get("id"),
+                    "object": "chat.completion",
+                    "created": results.get("created"),
+                    "model": results.get("model"),
+                    "choices": [choice]
+                }
+                
                 class DummyObj:
                     def __init__(self, d):
                         for k, v in d.items():
@@ -169,13 +176,28 @@ class VllmLLM(LLMBase):
                             else:
                                 setattr(self, k, v)
                 
-                parsed_res = self._parse_response(DummyObj(result), None)
-            else:
-                # Fallback
-                parsed_res = result
-            
-            if i == 0:
-                print(f"[DEBUG] vLLM Parsed Result 0: {str(parsed_res)[:200]}")
-            parsed_results.append(parsed_res)
+                parsed_results.append(self._parse_response(DummyObj(dummy_response), None))
+        
+        # Legacy/Multiplexed format: Returns a list of separate Completion objects
+        elif isinstance(results, list):
+            for result in results:
+                if isinstance(result, str):
+                    parsed_results.append(result)
+                elif isinstance(result, dict) and "choices" in result:
+                    class DummyObj:
+                        def __init__(self, d):
+                            for k, v in d.items():
+                                if isinstance(v, dict):
+                                    setattr(self, k, DummyObj(v))
+                                elif isinstance(v, list):
+                                    setattr(self, k, [DummyObj(i) if isinstance(i, dict) else i for i in v])
+                                else:
+                                    setattr(self, k, v)
+                    parsed_results.append(self._parse_response(DummyObj(result), None))
+                else:
+                    parsed_results.append(result)
+        else:
+            # Fallback
+            parsed_results.append(results)
                 
         return parsed_results
